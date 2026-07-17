@@ -1,6 +1,6 @@
 // Author: lib
-// Date: 2026-07-14
-// Description: 1-D delta search optimizer with single cost core.
+// Date: 2026-07-17
+// Description: 1-D delta search optimizer with pipelined cost evaluation and iterative step generation for timing on MAX 10.
 
 `include "./param.v"
 
@@ -35,18 +35,23 @@ module ti_optimization_ctrl #(
                S_WAIT_2     = 4'd6,
                S_EVAL_3     = 4'd7,
                S_WAIT_3     = 4'd8,
-               S_COMPARE    = 4'd9,
-               S_EVAL_FINAL = 4'd10,
-               S_WAIT_FINAL = 4'd11,
-               S_DONE       = 4'd12;
+               S_CMP_23     = 4'd9,
+               S_CMP_FINAL  = 4'd10,
+               S_UPDATE     = 4'd11,
+               S_EVAL_FINAL = 4'd12,
+               S_WAIT_FINAL = 4'd13,
+               S_DONE       = 4'd14;
 
     localparam COST_WIDTH = 64 + $clog2(2*(`MVT_CHANNEL)); 
 
+
     reg [3:0] current_state;
     reg [3:0] next_state;
-    reg [7:0] iter_cnt;
+    
+
+    reg [7:0]         iter_cnt;
     reg signed [19:0] best_delta;
-    reg [17:0]        t0_reg;       
+    reg [19:0]        step_val_reg; 
     
     reg [2*(`MVT_CHANNEL)-1:0][17:0] ti_init_array;
     reg [`MVT_CHANNEL-1:0][15:0]     v_threshold_reg;
@@ -55,11 +60,17 @@ module ti_optimization_ctrl #(
     
     wire [COST_WIDTH-1:0] cost_out_w;
     wire                  cost_valid_w;
-    reg  [COST_WIDTH-1:0] cost_reg     [0:3];
+    reg  [COST_WIDTH-1:0] cost_reg [0:3];
+
+    // Pipelined comparison registers
+    reg [COST_WIDTH-1:0] min_val_01_reg;
+    reg [1:0]            min_idx_01_reg;
+    reg [COST_WIDTH-1:0] min_val_23_reg;
+    reg [1:0]            min_idx_23_reg;
+    reg [1:0]            final_min_idx_reg;
 
     wire signed [31:0] w_a_out, w_b_out, w_c_out;
     wire w_a_valid, w_b_valid, w_c_valid;
-
 
     signal_rebuild_cost u_cost_0(
         .clk_200m    (clk_200m),
@@ -77,10 +88,8 @@ module ti_optimization_ctrl #(
         .c_valid_out (w_c_valid)
     );
 
-    wire [17:0] step_val;
-    assign step_val = t0_reg >> (2 + iter_cnt); 
-    
-    wire signed [19:0] s_step = $signed({2'b00, step_val});
+
+    wire signed [19:0] s_step = $signed(step_val_reg);
     wire signed [19:0] d_offset [0:3];
     
     assign d_offset[0] = -s_step;
@@ -105,15 +114,7 @@ module ti_optimization_ctrl #(
         end
     endfunction
 
-    // Min cost index selection
-    wire [1:0]  min_idx_01 = (cost_reg[0] <= cost_reg[1]) ? 2'd0 : 2'd1;
-    wire [COST_WIDTH-1:0] min_val_01 = (cost_reg[0] <= cost_reg[1]) ? cost_reg[0] : cost_reg[1];
 
-    wire [1:0]  min_idx_23 = (cost_reg[2] <= cost_reg[3]) ? 2'd2 : 2'd3;
-    wire [COST_WIDTH-1:0] min_val_23 = (cost_reg[2] <= cost_reg[3]) ? cost_reg[2] : cost_reg[3];
-    wire [1:0]  final_min_idx = (min_val_01 <= min_val_23) ? min_idx_01 : min_idx_23;
-
-    // FSM State Register (1st segment)
     always @(posedge clk_200m or negedge reset_200m) begin
         if(!reset_200m) begin
             current_state <= S_IDLE;
@@ -126,83 +127,63 @@ module ti_optimization_ctrl #(
     always @(*) begin
         next_state = current_state;
         case(current_state)
-            S_IDLE: begin
-                if(ti_valid_in) 
-                    next_state = S_EVAL_0;
-            end
-            S_EVAL_0: begin
-                next_state = S_WAIT_0;
-            end
-            S_WAIT_0: begin
-                if(cost_valid_w) 
-                    next_state = S_EVAL_1;
-            end
-            S_EVAL_1: begin
-                next_state = S_WAIT_1;
-            end
-            S_WAIT_1: begin
-                if(cost_valid_w) 
-                    next_state = S_EVAL_2;
-            end
-            S_EVAL_2: begin
-                next_state = S_WAIT_2;
-            end
-            S_WAIT_2: begin
-                if(cost_valid_w) 
-                    next_state = S_EVAL_3;
-            end
-            S_EVAL_3: begin
-                next_state = S_WAIT_3;
-            end
-            S_WAIT_3: begin
-                if(cost_valid_w) 
-                    next_state = S_COMPARE;
-            end
-            S_COMPARE: begin
+            S_IDLE:       if(ti_valid_in) next_state = S_EVAL_0;
+            S_EVAL_0:     next_state = S_WAIT_0;
+            S_WAIT_0:     if(cost_valid_w) next_state = S_EVAL_1;
+            S_EVAL_1:     next_state = S_WAIT_1;
+            S_WAIT_1:     if(cost_valid_w) next_state = S_EVAL_2;
+            S_EVAL_2:     next_state = S_WAIT_2;
+            S_WAIT_2:     if(cost_valid_w) next_state = S_EVAL_3;
+            S_EVAL_3:     next_state = S_WAIT_3;
+            S_WAIT_3:     if(cost_valid_w) next_state = S_CMP_23;
+            S_CMP_23:     next_state = S_CMP_FINAL;
+            S_CMP_FINAL:  next_state = S_UPDATE;
+            S_UPDATE: begin
                 if(iter_cnt == ITER_NUM - 1) 
                     next_state = S_EVAL_FINAL;
                 else 
                     next_state = S_EVAL_0;
             end
-            S_EVAL_FINAL: begin
-                next_state = S_WAIT_FINAL;
-            end
-            S_WAIT_FINAL: begin
-                if(w_a_valid) 
-                    next_state = S_DONE;
-            end
-            S_DONE: begin
-                next_state = S_IDLE;
-            end
-            default: next_state = S_IDLE;
+            S_EVAL_FINAL: next_state = S_WAIT_FINAL;
+            S_WAIT_FINAL: if(w_a_valid) next_state = S_DONE;
+            S_DONE:       next_state = S_IDLE;
+            default:      next_state = S_IDLE;
         endcase
     end
+
 
     integer i;
     always @(posedge clk_200m or negedge reset_200m) begin
         if(!reset_200m) begin
-            iter_cnt        <= 8'd0;
-            best_delta      <= 20'sd0;
-            t0_reg          <= 18'd0;
-            ti_out          <= 'd0;
-            ti_valid_out    <= 1'b0;
-            mux_ti_0        <= 'd0;
-            v_threshold_reg <= 'd0;
-            mux_valid_0     <= 1'b0;
+            iter_cnt          <= 8'd0;
+            best_delta        <= 20'sd0;
+            step_val_reg      <= 20'd0;
+            ti_out            <= 'd0;
+            ti_valid_out      <= 1'b0;
+            mux_ti_0          <= 'd0;
+            v_threshold_reg   <= 'd0;
+            mux_valid_0       <= 1'b0;
 
-            cost_reg[0]     <= 'd0;
-            cost_reg[1]     <= 'd0;
-            cost_reg[2]     <= 'd0;
-            cost_reg[3]     <= 'd0;
+            cost_reg[0]       <= 'd0;
+            cost_reg[1]       <= 'd0;
+            cost_reg[2]       <= 'd0;
+            cost_reg[3]       <= 'd0;
+            
+            min_val_01_reg    <= 'd0;
+            min_idx_01_reg    <= 2'd0;
+            min_val_23_reg    <= 'd0;
+            min_idx_23_reg    <= 2'd0;
+            final_min_idx_reg <= 2'd0;
 
-            final_a         <= 32'd0;
-            final_b         <= 32'd0;
-            final_c         <= 32'd0;
-            final_a_valid   <= 1'b0;
-            final_b_valid   <= 1'b0;
-            final_c_valid   <= 1'b0;
-            ti_init_array   <= 'd0;
+            final_a           <= 32'd0;
+            final_b           <= 32'd0;
+            final_c           <= 32'd0;
+            final_a_valid     <= 1'b0;
+            final_b_valid     <= 1'b0;
+            final_c_valid     <= 1'b0;
+            ti_init_array     <= 'd0;
         end else begin
+
             ti_valid_out  <= 1'b0;
             mux_valid_0   <= 1'b0;
             final_a_valid <= 1'b0;
@@ -214,7 +195,8 @@ module ti_optimization_ctrl #(
                     if(ti_valid_in) begin
                         ti_init_array   <= ti_in;
                         v_threshold_reg <= v_threshold;
-                        t0_reg          <= ti_in[0];
+                        // Initialize step val replacing dynamic barrel shifter
+                        step_val_reg    <= {2'b00, ti_in[0]} >> 2; 
                         best_delta      <= $signed({2'b00, ti_in[0] >> 1}); 
                         iter_cnt        <= 8'd0;
                     end
@@ -247,6 +229,15 @@ module ti_optimization_ctrl #(
                         mux_ti_0[i] <= apply_offset(ti_init_array[i], best_delta + d_offset[2]);
                     end
                     mux_valid_0 <= 1'b1;
+                    
+                    //  compare 0 and 1
+                    if (cost_reg[0] <= cost_reg[1]) begin
+                        min_val_01_reg <= cost_reg[0];
+                        min_idx_01_reg <= 2'd0;
+                    end else begin
+                        min_val_01_reg <= cost_reg[1];
+                        min_idx_01_reg <= 2'd1;
+                    end
                 end
 
                 S_WAIT_2: begin
@@ -264,11 +255,31 @@ module ti_optimization_ctrl #(
                     if(cost_valid_w) cost_reg[3] <= cost_out_w;
                 end
 
-                S_COMPARE: begin
-                    best_delta <= best_delta + d_offset[final_min_idx];
+                S_CMP_23: begin
+                    //  compare 2 and 3
+                    if (cost_reg[2] <= cost_reg[3]) begin
+                        min_val_23_reg <= cost_reg[2];
+                        min_idx_23_reg <= 2'd2;
+                    end else begin
+                        min_val_23_reg <= cost_reg[3];
+                        min_idx_23_reg <= 2'd3;
+                    end
+                end
+
+                S_CMP_FINAL: begin
+                    if (min_val_01_reg <= min_val_23_reg) begin
+                        final_min_idx_reg <= min_idx_01_reg;
+                    end else begin
+                        final_min_idx_reg <= min_idx_23_reg;
+                    end
+                end
+
+                S_UPDATE: begin
+                    best_delta <= best_delta + d_offset[final_min_idx_reg];
                     if(iter_cnt != ITER_NUM - 1) begin
                         iter_cnt <= iter_cnt + 8'd1;
                     end
+                    step_val_reg <= step_val_reg >> 1; 
                 end
                 
                 S_EVAL_FINAL: begin

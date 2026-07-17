@@ -129,8 +129,8 @@ module k3_final_cal(
 	IntToFixed_Parallel #(
         .QUOTIENT_WIDTH(40),
         .OPERAND_WIDTH (32),
-        .FRACTIONAL_BITS (24),
-        .PIPELINE_STAGES (8)
+        .FRACTIONAL_BITS (24)
+        //.PIPELINE_STAGES (8)
 	) IntToFixed_Parallel_inst (
         .clk         (clk_200m),
         .rst_n       (reset_200m),

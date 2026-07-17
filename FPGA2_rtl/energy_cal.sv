@@ -146,13 +146,7 @@ multi_32x32bit_sign multi_32x32bit_sign_inst (
 //-------------------------------------------------------------------
 // Logarithmt, input Qx.y, output Qm.n
 //-------------------------------------------------------------------
-cal_ln_pipe_gen #(
-    .INPUT_X  (8),
-    .INPUT_Y  (24),
-    .OUTPUT_M (8),
-    .OUTPUT_N (24),
-    .LN2_VAL  (11629080) 
-) u_cal_ln (
+cal_ln_q8_24 u_cal_ln (
     .clk      (clk_200m),
     .rst_n    (reset_200m),
     .valid_i  (ln_vld_in),

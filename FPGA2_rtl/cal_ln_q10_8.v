@@ -1,134 +1,171 @@
-//-----------------------------------------------------------------------------
-// Author       : lib
-// Date         : 2026-04-03
-// Description  : Calculate ln(x) for 18-bit Q10.8 input, output 28-bit Q4.24
-//-----------------------------------------------------------------------------
+/*
+ * Author       : lib
+ * Date         : 2026-07-16
+ * Description  : Pipelined natural logarithm (ln) calculator,4 stages, for Q10.8 input and Q4.24 output.
+ *               The module uses a 256-entry ROM for ln(m) values and linear interpolation for fractional parts.
+ * Input        : Q10.8 fixed-point (a).
+ * Output       : Q4.24 fixed-point (ln_value).
+ * ROM          : Standard single-port ROM interface (address, clock, rden, q).
+ */
+
 module cal_ln_q10_8 (
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire        valid_i,
-    input  wire [17:0] a,
-    output reg         valid_o,
-    output reg  [27:0] ln_value
+    input  wire         clk,
+    input  wire         rst_n,
+    input  wire         valid_i,
+    input  wire [17:0]  a,
+    output reg          valid_o,
+    output reg  [27:0]  ln_value
 );
 
-parameter INPUT_WIDTH      = 18;
-parameter OUTPUT_WIDTH     = 28;
-parameter OUTPUT_DEC_WIDTH = 24;
+    //==========================================================================
+    // Stage 1: Leading One Detection (LOD), Normalization & k*ln(2) MUX
+    //==========================================================================
+    reg  [4:0]  lop_s1;
+    reg  [17:0] norm_m_s1_comb;
+    reg  [3:0]  k_s1;
+    reg  [27:0] k_ln2_s1_comb;
+    
+    reg  [17:0] norm_m_s1;
+    reg  [27:0] k_ln2_s1;
+    reg         vld_s1;
 
+    // Priority encoder for Q10.8 (Valid input >= 1.0, so lop_s1 >= 8)
+    always @(*) begin
+        casez (a[17:8])
+            10'b1????_????? : lop_s1 = 5'd17;
+            10'b01???_????? : lop_s1 = 5'd16;
+            10'b001??_????? : lop_s1 = 5'd15;
+            10'b0001?_????? : lop_s1 = 5'd14;
+            10'b00001_????? : lop_s1 = 5'd13;
+            10'b00000_1???? : lop_s1 = 5'd12;
+            10'b00000_01??? : lop_s1 = 5'd11;
+            10'b00000_001?? : lop_s1 = 5'd10;
+            10'b00000_0001? : lop_s1 = 5'd9;
+            default         : lop_s1 = 5'd8;
+        endcase
+    end
 
-//Q4.24
-localparam [27:0] RESULT_0LN2  = 28'h000_0000; // 0
-localparam [27:0] RESULT_1LN2  = 28'h0B1_7218; // 1*ln2
-localparam [27:0] RESULT_2LN2  = 28'h162_E430; // 2*ln2
-localparam [27:0] RESULT_3LN2  = 28'h214_5648; // 3*ln2
-localparam [27:0] RESULT_4LN2  = 28'h2C5_C860; // 4*ln2
-localparam [27:0] RESULT_5LN2  = 28'h377_3A78; // 5*ln2
-localparam [27:0] RESULT_6LN2  = 28'h428_AC90; // 6*ln2
-localparam [27:0] RESULT_7LN2  = 28'h4DA_1EA8; // 7*ln2
-localparam [27:0] RESULT_8LN2  = 28'h58B_90C0; // 8*ln2
-localparam [27:0] RESULT_9LN2  = 28'h63D_02D8; // 9*ln2
-localparam [27:0] RESULT_10LN2 = 28'h6EE_74F0; // 10*ln2
-localparam [27:0] RESULT_11LN2 = 28'h79F_E708; // 11*ln2
-localparam [27:0] RESULT_12LN2 = 28'h851_5920; // 12*ln2
-localparam [27:0] RESULT_13LN2 = 28'h902_CB38; // 13*ln2
-localparam [27:0] RESULT_14LN2 = 28'h9B4_3D50; // 14*ln2
-localparam [27:0] RESULT_15LN2 = 28'hA65_AF68; // 15*ln2
-localparam [27:0] RESULT_16LN2 = 28'hB17_2180; // 16*ln2
-localparam [27:0] RESULT_17LN2 = 28'hBC8_9398; // 17*ln2
+    // Normalization and k*ln(2) LUT MUX
+    always @(*) begin
+        norm_m_s1_comb = a << (5'd17 - lop_s1);
+        k_s1           = lop_s1 - 5'd8;
 
+        case (k_s1)
+            4'd0:    k_ln2_s1_comb = 28'd0;         // 0 * ln(2)
+            4'd1:    k_ln2_s1_comb = 28'd11629080;  // 1 * ln(2) * 2^24
+            4'd2:    k_ln2_s1_comb = 28'd23258160;  // 2 * ln(2) * 2^24
+            4'd3:    k_ln2_s1_comb = 28'd34887240;  // 3 * ln(2) * 2^24
+            4'd4:    k_ln2_s1_comb = 28'd46516320;  // 4 * ln(2) * 2^24
+            4'd5:    k_ln2_s1_comb = 28'd58145400;  // 5 * ln(2) * 2^24
+            4'd6:    k_ln2_s1_comb = 28'd69774480;  // 6 * ln(2) * 2^24
+            4'd7:    k_ln2_s1_comb = 28'd81403560;  // 7 * ln(2) * 2^24
+            4'd8:    k_ln2_s1_comb = 28'd93032640;  // 8 * ln(2) * 2^24
+            4'd9:    k_ln2_s1_comb = 28'd104661720; // 9 * ln(2) * 2^24
+            default: k_ln2_s1_comb = 28'd0;
+        endcase
+    end
 
-reg  [INPUT_WIDTH-1:0]  shift_a;
-reg  [OUTPUT_WIDTH-1:0] nln2_a;
-reg                     d1_valid_i;
-reg                     err_flag;
-
-wire [OUTPUT_WIDTH-1:0]     ln_value_tmp;
-wire [OUTPUT_DEC_WIDTH-1:0] norm_a;
-wire [OUTPUT_DEC_WIDTH-1:0] result_norm_a;
-
-
-always @(posedge clk) begin
-    if (valid_i) begin
-        if (~|a) begin // a == 0
-            shift_a  <= a;
-            nln2_a   <= {(OUTPUT_WIDTH){1'b0}};
-            err_flag <= 1'b1;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            vld_s1    <= 1'b0;
+            norm_m_s1 <= 18'd0;
+            k_ln2_s1  <= 28'd0;
         end else begin
-            err_flag <= 1'b0;
-            casez (a) // priority encoder for 18-bit
-                18'b1?_????_????_????_????: begin shift_a <= a << 0;  nln2_a <= RESULT_17LN2; end
-                18'b01_????_????_????_????: begin shift_a <= a << 1;  nln2_a <= RESULT_16LN2; end
-                18'b00_1???_????_????_????: begin shift_a <= a << 2;  nln2_a <= RESULT_15LN2; end
-                18'b00_01??_????_????_????: begin shift_a <= a << 3;  nln2_a <= RESULT_14LN2; end
-                18'b00_001?_????_????_????: begin shift_a <= a << 4;  nln2_a <= RESULT_13LN2; end
-                18'b00_0001_????_????_????: begin shift_a <= a << 5;  nln2_a <= RESULT_12LN2; end
-                18'b00_0000_1???_????_????: begin shift_a <= a << 6;  nln2_a <= RESULT_11LN2; end
-                18'b00_0000_01??_????_????: begin shift_a <= a << 7;  nln2_a <= RESULT_10LN2; end
-                18'b00_0000_001?_????_????: begin shift_a <= a << 8;  nln2_a <= RESULT_9LN2;  end
-                18'b00_0000_0001_????_????: begin shift_a <= a << 9;  nln2_a <= RESULT_8LN2;  end
-                18'b00_0000_0000_1???_????: begin shift_a <= a << 10; nln2_a <= RESULT_7LN2;  end
-                18'b00_0000_0000_01??_????: begin shift_a <= a << 11; nln2_a <= RESULT_6LN2;  end
-                18'b00_0000_0000_001?_????: begin shift_a <= a << 12; nln2_a <= RESULT_5LN2;  end
-                18'b00_0000_0000_0001_????: begin shift_a <= a << 13; nln2_a <= RESULT_4LN2;  end
-                18'b00_0000_0000_0000_1???: begin shift_a <= a << 14; nln2_a <= RESULT_3LN2;  end
-                18'b00_0000_0000_0000_01??: begin shift_a <= a << 15; nln2_a <= RESULT_2LN2;  end
-                18'b00_0000_0000_0000_001?: begin shift_a <= a << 16; nln2_a <= RESULT_1LN2;  end
-                default:                    begin shift_a <= a << 17; nln2_a <= RESULT_0LN2;  end 
-            endcase
-        end
-    end else begin
-        shift_a  <= shift_a;
-        nln2_a   <= nln2_a;
-        err_flag <= err_flag;
-    end
-end
-
-
-assign norm_a = {shift_a, {(OUTPUT_DEC_WIDTH - INPUT_WIDTH){1'b0}}};
-
-// inst designware ip,Q0.24 input and output
-DWFC_ln_24_1_1 dw_ln_inst1 (
-    .a(norm_a),
-    .z(result_norm_a)
-);
-
-reg [OUTPUT_DEC_WIDTH-1:0] result_norm_a_r;
-reg d2_valid_i;
-always @(posedge clk) begin
-    if (!rst_n) begin
-        result_norm_a_r <= 'b0;
-    end else begin
-        result_norm_a_r <= result_norm_a;
-    end
-end
-
-assign ln_value_tmp = nln2_a + {4'b0, result_norm_a_r};
-
-
-always @(posedge clk) begin
-    if (!rst_n) begin
-        d1_valid_i <= 1'b0;
-	d2_valid_i <= 1'b0;
-        valid_o    <= 1'b0;
-    end else begin
-        d1_valid_i <= valid_i;
-	d2_valid_i <= d1_valid_i;
-        valid_o    <= d2_valid_i;
-    end
-end
-
-// final logic: ln(x_real) = ln(x_int) - 8*ln(2)
-always @(posedge clk) begin 
-    if (!rst_n) begin
-        ln_value <= {(OUTPUT_WIDTH){1'b0}};
-    end else begin
-        if (d2_valid_i) begin
-            ln_value <= err_flag ? {(OUTPUT_WIDTH){1'b0}} : (ln_value_tmp - RESULT_8LN2);
-        end else begin
-            ln_value <= ln_value;
+            vld_s1    <= valid_i;
+            if (valid_i) begin
+                norm_m_s1 <= norm_m_s1_comb;
+                k_ln2_s1  <= k_ln2_s1_comb;
+            end
         end
     end
-end
+
+    //==========================================================================
+    // Stage 2: ROM Read & Control Signals Pipeline Alignment
+    //==========================================================================
+    wire [7:0]  addr_s1;
+    wire [8:0]  delta_s1;
+    wire [40:0] rom_q_s2;        
+    wire [23:0] rom_base_s2;
+    wire [16:0] rom_slope_s2;
+    
+    reg  [8:0]  delta_s2;
+    reg  [27:0] k_ln2_s2;
+    reg         vld_s2;
+
+    assign addr_s1 = norm_m_s1[16:9];  // 8-bit ROM address
+    assign delta_s1 = norm_m_s1[8:0];  // 9-bit interpolation delta
+
+    ln_lut_rom_256x41 u_ln_lut (
+        .address ( addr_s1 ),
+        .clock   ( clk ),
+        .rden    ( vld_s1 ),           
+        .q       ( rom_q_s2 )          
+    );
+
+    // Slice the 41-bit  output into base and slope
+    assign rom_base_s2  = rom_q_s2[40:17]; // Upper 24 bits base
+    assign rom_slope_s2 = rom_q_s2[16:0];  // Lower 17 bits slope
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            vld_s2   <= 1'b0;
+            delta_s2 <= 9'd0;
+            k_ln2_s2 <= 28'd0;
+        end else begin
+            vld_s2   <= vld_s1;
+            if (vld_s1) begin
+                delta_s2 <= delta_s1;
+                k_ln2_s2 <= k_ln2_s1;
+            end
+        end
+    end
+
+    //==========================================================================
+    // Stage 3: Exact Width Multiplier IP Instantiation
+    //==========================================================================
+    wire [25:0] mult_result_s3; 
+    reg  [27:0] k_ln2_s3;
+    reg  [23:0] base_s3;
+    reg         vld_s3;
+
+    multi_17x9bit multi_17x9bit_inst (
+        .clock  ( clk ),
+        .aclr   ( ~rst_n ),
+        .dataa  ( rom_slope_s2 ),          // 17-bit
+        .datab  ( delta_s2 ),              // 9-bit
+        .result ( mult_result_s3 )         // 26-bit product
+    );
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            vld_s3   <= 1'b0;
+            k_ln2_s3 <= 28'd0;
+            base_s3  <= 24'd0;
+        end else begin
+            vld_s3   <= vld_s2;
+            if (vld_s2) begin
+                k_ln2_s3 <= k_ln2_s2;
+                base_s3  <= rom_base_s2;
+            end
+        end
+    end
+
+    //==========================================================================
+    // Stage 4: Align & Accumulate (Final Phase)
+    //==========================================================================
+    wire [27:0] delta_adj_s4;
+    assign delta_adj_s4 = {11'd0, mult_result_s3[25:9]}; // Wire truncation
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_o  <= 1'b0;
+            ln_value <= 28'd0;
+        end else begin
+            valid_o  <= vld_s3;
+            if (vld_s3) begin
+                ln_value <= k_ln2_s3 + {4'd0, base_s3} + delta_adj_s4;
+            end
+        end
+    end
 
 endmodule

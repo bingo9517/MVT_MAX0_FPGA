@@ -84,7 +84,7 @@ module s3_final_cal(
 	assign valid = s3_new_ready && j3_new_ready && s2_new_ready && j2_new_ready;
 
 	wire signed [63:0] result_sig;
-        reg  signed [63:0] result_sig_r;
+    reg  signed [63:0] result_sig_r;
 
     always @(posedge clk_200m or negedge reset_200m) begin
         if (!reset_200m) begin
@@ -129,8 +129,8 @@ module s3_final_cal(
 	IntToFixed_Parallel #(
         .QUOTIENT_WIDTH(40),
         .OPERAND_WIDTH (32),
-        .FRACTIONAL_BITS (24),
-        .PIPELINE_STAGES (8)
+        .FRACTIONAL_BITS (24)
+        //.PIPELINE_STAGES (8)
 	) IntToFixed_Parallel_inst (
         .clk         (clk_200m),
         .rst_n       (reset_200m),

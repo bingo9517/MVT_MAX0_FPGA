@@ -126,8 +126,8 @@ module j3_cal #(
     IntToFixed_Parallel #(
         .QUOTIENT_WIDTH(MAX_J3_W+1),
         .OPERAND_WIDTH (MAX_H3_W+1),
-        .FRACTIONAL_BITS (24),
-        .PIPELINE_STAGES (8)
+        .FRACTIONAL_BITS (24)
+       // .PIPELINE_STAGES (8)
     ) IntToFixed_Parallel_inst (
         .clk         (clk_200m),
         .rst_n       (reset_200m),
